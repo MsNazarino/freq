@@ -1,0 +1,35 @@
+Виконуємо новий цикл навчання за новими вимогами, без порівняння з попередніми версіями.
+Робимо поетапно, кожен етап — окремий запуск. Зберігай результати етапу у файли
+(parquet/joblib), наступний етап продовжує з них.
+
+ЕТАП 1 (лише це, зараз):
+1. Виправ utils.py:
+   - SUV_REGEX: поверни шаблони з межами слова (SUV_PATTERNS з (^|\s)...($|\s|-));
+   - IS_PREMIUM_BRAND = isin(PREMIUM_BRANDS | LUXURY_BRANDS);
+   - причіп = kind in (ПРИЧІП, НАПІВПРИЧІП) АБО body_type ПР- / Н/ПР- (крім van_ignore);
+     kind = НАПІВПРИЧІП або body_type Н/ПР- → HEAVY;
+   - year = pd.to_numeric(production_year); 1900 → NaN; вік clip(0, 50).
+2. prepare_vehicle_data + aggregate_customers на df_for_clustering, збережи
+   customers.parquet.
+3. Збережи популяцію KMeans (1–2 легковики, без BUSINESS / MULTI_CAR_3PLUS /
+   LUXURY / MODERN_PREMIUM) у km_population.parquet.
+
+Покажи: к-сть клієнтів, к-сть у популяції KMeans, к-сть SUV-авто,
+к-сть ТЗ у класі OTHER за KIND_STD.
+
+ЕТАП 2: на km_population.parquet.
+- StandardScaler на 6 CLUSTER_FEATURES.
+- k = 5..10: KMeans(n_init=5) fit на вибірці 50 000; silhouette (5 підвибірок
+  по 10 000), Davies-Bouldin і ARI між 5 seed — на вибірці 50 000; розміри у %.
+- Обери k (ARI ≥ 0.95 + інтерпретованість), fit фінальної моделі, predict на всіх.
+- Профілі кластерів: медіани count/value/age, % > 0 PREMIUM/SUV/EV/HYBRID/GAS, розмір у %.
+- Запропонуй назви з чинного набору. Якщо EV-кластера немає — EV_ADOPTERS
+  правилом (EV_SHARE = 1) після MODERN_PREMIUM.
+Збережи scaler, kmeans, мапінг, мітки. Покажи таблицю метрик і профілі з назвами.
+
+ЕТАП 3: дерево depth 4 і 5 на мітках KMeans (hold-out 20%), обери depth.
+Злий однакові листки, округли пороги (вартість 500, вік 1, частки 0.05),
+fidelity після округлення. Онови assign_tree_segments в utils.py.
+Застосуй повну ієрархію до всіх 254 019 клієнтів, потім score (тільки правила)
+vs pipeline — має бути 100%.
+Покажи: fidelity, правила IF/THEN, розміри сегментів, результат score vs pipeline.
