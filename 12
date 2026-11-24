@@ -1,0 +1,103 @@
+Не потрібно нічого запускати в себе — лише підготуй 3 файли, які я запущу
+на своєму ПК: utils.py, pipeline.ipynb, score.ipynb.
+Вхідний файл: df_for_clustering.xlsx (шлях — змінна в першій клітинці).
+Усі результати зберігаються в папку output/ (створюється автоматично).
+
+=== utils.py ===
+Візьми поточний utils.py за основу і внеси правки:
+1. SUV_REGEX — шаблони з межами слова, як у попередній версії
+   (SUV_PATTERNS з (^|\s)...($|\s|-)), щоб не ловило Q50/Q60/Q70, RX-8 тощо.
+   + body_type містить КРОСОВЕР / ПОЗАШЛЯХОВИК → SUV.
+2. IS_PREMIUM_BRAND = BRAND_STD.isin(PREMIUM_BRANDS | LUXURY_BRANDS).
+3. Пальне з fuel_type (6 класів): БЕНЗИН → PETROL, ДИЗЕЛЬНЕ ПАЛИВО → DIESEL,
+   ЕЛЕКТРО → ELECTRIC, ГАЗ → GAS, будь-яке поєднання (АБО / ТА / кома) → HYBRID,
+   порожнє / "." / ВІДСУТНЄ / НЕ ВИЗНАЧЕНО → UNKNOWN.
+4. Причіп = kind in (ПРИЧІП, НАПІВПРИЧІП) АБО body_type починається з ПР- / Н/ПР-.
+   Тип: ПР-Д/П ЧОВНІВ → BOAT; Н/ПР-* або kind НАПІВПРИЧІП → HEAVY;
+   ПР-ЛЕГКОВИЙ* → LIGHT; інші ПР-*: total_weight > 3500 → HEAVY, інакше LIGHT.
+   IS_CAMPER_TRAILER: body_type = ПР-ФУРГОН ЖИТЛОВИЙ.
+   Винятки: OPEL VIVARO, FIAT DUCATO, FORD TRANSIT CONNECT з Н/ПР-АВТОВОЗ —
+   легкові, не причепи; ОДИСЕЙ 01 → LIGHT; KOGEL JN 24 → HEAVY.
+5. Класи ТЗ: PASSENGER / COMMERCIAL (вантажні + спецтехніка) / BUS / MOTO /
+   TRAILER / OTHER — кожен ТЗ рівно в одному класі (assert).
+6. Рік: pd.to_numeric(production_year); 1900 → NaN; вік = 2026 − рік, clip(0, 50).
+7. Агрегація до клієнта: усі поточні ознаки + EV/HYBRID/GAS_SHARE, HAS_EV/HYBRID/GAS,
+   TRAILER_COUNT/SHARE, HAS_LIGHT/BOAT/HEAVY/CAMPER_TRAILER, HEAVY_TRAILER_COUNT,
+   BUS_COUNT, COMMERCIAL_COUNT, BUSINESS_VEHICLE_COUNT = COMMERCIAL + BUS + HEAVY_TRAILER,
+   HAS_LUXURY_VEHICLE, HAS_MODERN_PREMIUM (premium-авто з віком ≤ 9 або ≥ $30k).
+8. Функція assign_final_segments(customers, tree_rules, ev_rule) з ієрархією:
+   - 0 легкових: BUSINESS_VEHICLE_COUNT ≥ 1 → COMMERCIAL_VEHICLE_OWNERS;
+     HAS_MOTO → MOTORCYCLE_OWNERS; є LIGHT/BOAT причіп → TRAILER_ONLY_OWNERS;
+     інакше → OTHER_NON_PASSENGER;
+   - ≥ 1 легковий і BUSINESS_VEHICLE_COUNT ≥ 1 → BUSINESS_VEHICLE_OWNERS;
+   - ≥ 3 легкових → MULTI_CAR_3PLUS;
+   - є легковий ≥ $60 000 → LUXURY;
+   - HAS_MODERN_PREMIUM → MODERN_PREMIUM;
+   - якщо ev_rule=True: EV_SHARE = 1 → EV_ADOPTERS;
+   - решта → правила дерева (tree_rules).
+   assert: кожен клієнт рівно 1 сегмент, user_id унікальні.
+9. Функції: rules_from_tree(tree, feature_names) — витягує правила з
+   sklearn-дерева, зливає сусідні листки з однаковим класом і округлює пороги
+   (USD — до 500, вік — до 1, кількість — до 0.5, частки — до 0.05);
+   apply_rules(customers, rules) — застосовує правила без sklearn;
+   rules_to_text(rules) — IF/THEN; rules_to_sql(rules) — CASE WHEN.
+   Правила зберігаються в output/tree_rules.json.
+
+=== pipeline.ipynb ===
+Кожен крок — окрема клітинка з markdown-заголовком; після КОЖНОЇ клітинки
+виводиться її результат (shape, head, розподіли, таблиці, метрики, графіки).
+Без дублювання коду — усе з utils.py.
+1. Налаштування: шляхи, RANDOM_STATE = 42, BUSINESS_THRESHOLD = 1.
+2. Завантаження даних: shape, колонки, % пропусків.
+3. Підготовка авто: мапінг fuel_type → FUEL_CLASS з к-стю, таблиця
+   body_type причепів → TRAILER_TYPE з к-стю, к-сть ТЗ за класами,
+   к-сть SUV-авто, топ-30 SUV-моделей.
+4. Агрегація до клієнта: к-сть клієнтів, розподіл легковиків 1/2/3/4/5/6+,
+   describe ключових ознак.
+5. Популяція KMeans: 1–2 легковики, без BUSINESS / MULTI_CAR_3PLUS / LUXURY /
+   MODERN_PREMIUM. Вивести розмір.
+6. Вибір k = 5..10: KMeans(n_init=5) fit на вибірці 50 000, predict на всіх;
+   silhouette (5 підвибірок по 10 000, mean ± std), Davies-Bouldin і ARI між
+   5 seed (на 50 000); розміри кластерів у %. Таблиця + графіки.
+   Змінна K_FINAL в окремій клітинці (за замовчуванням — k з найкращим
+   silhouette серед k з ARI ≥ 0.95).
+7. Фінальний KMeans з K_FINAL, збереження scaler і kmeans (joblib).
+8. Профілі кластерів: медіани count/value/age, середні та % > 0 для
+   PREMIUM/SUV/EV/HYBRID/GAS shares, розмір у %; heatmap.
+9. Автоматична пропозиція назв за профілями (не за номерами), з набору:
+   CORE_MASS_MARKET_BUDGET, CORE_MASS_MARKET_LOWER_MID, MAINSTREAM_SUV,
+   ESTABLISHED_PREMIUM, BUDGET_LEGACY, MULTI_VEHICLE_BUDGET_HOUSEHOLDS,
+   MULTI_VEHICLE_AFFLUENT_HOUSEHOLDS, EV_ADOPTERS.
+   Якщо немає кластера з середнім EV_SHARE ≥ 0.8 → EV_RULE = True
+   (EV_ADOPTERS правилом) і вивести попередження.
+   Далі ОКРЕМА клітинка CLUSTER_NAMES = {...} — словник, який я можу
+   вручну відредагувати і перезапустити наступні клітинки. Збереження в
+   output/cluster_mapping.json.
+10. Дерево: DecisionTreeClassifier depth 4 і 5 на мітках KMeans (hold-out 20%),
+    TREE_FEATURES у доларах / роках / частках. Fidelity і к-сть листків;
+    обрати depth 5, якщо різниця > 2 п.п., інакше 4.
+11. Правила: rules_from_tree → злиття листків, округлення → fidelity ПІСЛЯ
+    округлення відносно міток KMeans; вивести правила IF/THEN.
+12. Фінальні сегменти для всіх клієнтів через assign_final_segments
+    (саме за правилами, не кластерними мітками). Таблиця розмірів (к-сть, %),
+    bar chart, профілі сегментів.
+13. Збереження: output/customer_segments.csv.gz (user_id, FINAL_SEGMENT,
+    ключові ознаки, усі прапорці HAS_*/IS_*), segmentation_rules.txt,
+    segmentation_rules.sql, tree_rules.json.
+
+=== score.ipynb ===
+Тільки присвоєння сегментів, без KMeans і без sklearn-дерева.
+1. Налаштування шляхів.
+2. Завантаження df_for_clustering, prepare + aggregate з utils.py.
+3. Завантаження output/tree_rules.json і EV_RULE (з cluster_mapping.json).
+4. assign_final_segments → розміри сегментів.
+5. Збереження output/segments_scored.csv.gz.
+6. Перевірка з output/customer_segments.csv.gz за user_id: % збігу (має бути 100%),
+   якщо ні — вивести приклади розбіжностей.
+
+Вимоги до коду:
+- код читабельний (не в один рядок), короткі коментарі;
+- ноутбуки мають запускатися через Restart & Run All без помилок;
+- на початку pipeline.ipynb — клітинка з перевіркою наявності бібліотек
+  (pandas, numpy, scikit-learn, openpyxl, matplotlib, joblib).
+Надай повний вміст усіх 3 файлів.
