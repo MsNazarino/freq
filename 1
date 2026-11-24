@@ -1,0 +1,17 @@
+Порядок затверджено:
+Population B → BUSINESS_VEHICLE_OWNERS → MULTI_CAR_3PLUS → LUXURY → MODERN_PREMIUM → TREE.
+Так, Luxury і Modern Premium можуть перезаписуватися BUSINESS і MULTI_CAR_3PLUS.
+
+Щоб не втратити цю інформацію:
+- для ВСІХ клієнтів прапорці HAS_LUXURY_VEHICLE і HAS_MODERN_PREMIUM;
+- покажи, скільки Luxury і Modern Premium перейшло в BUSINESS і MULTI_CAR_3PLUS
+  (к-сть і % від їхнього старого розміру).
+
+Уточнення:
+1. FUEL_CLASS будуй по фактичних 7 значеннях FUEL_STD з даних, покажи мапінг з к-стю.
+   Чистий газ (LPG/CNG без бензину) → HYBRID, покажи окремо, скільки таких авто.
+2. Причепи: якщо total_weight порожній — тип лише за назвою kind,
+   покажи к-сть таких причепів.
+3. Дерево: рахуй обидва варіанти, як ти запропонував.
+
+Решту реалізуй, як описав.
