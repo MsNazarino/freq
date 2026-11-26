@@ -6,33 +6,32 @@ from pathlib import Path
 import pandas as pd
 
 # ================== НАЛАШТУВАННЯ ==================
-SRC_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(r".\uBKI_v3")
+SRC_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "uBKI_v3"
 N_BATCHES = 9
-OUT_CSV = SRC_DIR / "ubki_all_flat.csv"
-OUT_XLSX = SRC_DIR / "ubki_all_flat.xlsx"
+OUT_DIR = SRC_DIR
 
-# Короткі префікси для розкритих колонок (решта JSON-колонок знайдеться автоматично)
-PREFIX = {
-    "Уповноважені особи": "Уповн",
-    "Засновники": "Засн",
-    "Бенефіціари": "Бенеф",
+# префікс колонок | скільки осіб максимум розкривати в колонки
+CONFIG = {
+    "Уповноважені особи": ("Уповн", 20),
+    "Засновники":         ("Засн",  20),
+    "Бенефіціари":        ("Бенеф", 20),
 }
+DEFAULT_MAX = 20  # для JSON-колонок, яких немає в CONFIG
 # ==================================================
 
 
 def parse_list(v):
     """'[{...}, {...}]' -> list[dict]; порожнє -> []; не вдалося -> None"""
-    if v is None or (isinstance(v, float) and pd.isna(v)):
-        return []
-    s = str(v).strip()
+    s = "" if v is None else str(v).strip()
     if not s:
         return []
+    data = None
     for loader in (json.loads, ast.literal_eval):
         try:
             data = loader(s)
             break
         except Exception:
-            data = None
+            pass
     if isinstance(data, dict):
         data = [data]
     if not isinstance(data, list):
@@ -41,7 +40,7 @@ def parse_list(v):
 
 
 def is_json_col(series):
-    s = series.dropna().astype(str).str.strip()
+    s = series.astype(str).str.strip()
     s = s[s != ""]
     return len(s) > 0 and s.str.startswith("[").mean() > 0.9
 
@@ -54,31 +53,28 @@ for i in range(1, N_BATCHES + 1):
         print(f"[!] немає файлу {path.name}")
         continue
     df = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
-    df.insert(0, "_batch", i)
+    df.insert(0, "_batch", str(i))
     frames.append(df)
     print(f"{path.name}: {len(df)} рядків")
 
 df = pd.concat(frames, ignore_index=True)
 df["ЄДРПОУ"] = df["ЄДРПОУ"].str.strip().str.zfill(8)
 print(f"\nРазом: {len(df)} рядків, унікальних ЄДРПОУ: {df['ЄДРПОУ'].nunique()}")
-if "_parser_status" in df:
-    print("Статуси парсера:", df["_parser_status"].value_counts().to_dict())
 
 # ---------- 2. Розкриваємо JSON-колонки ----------
 json_cols = [c for c in df.columns if is_json_col(df[c])]
-print("\nJSON-колонки:", json_cols)
+print("JSON-колонки:", json_cols, "\n")
 
 for col in json_cols:
-    pref = PREFIX.get(col, col)
-    parsed = df[col].map(parse_list)
+    pref, max_items = CONFIG.get(col, (col, DEFAULT_MAX))
+    parsed = [parse_list(v) for v in df[col].tolist()]
 
-    bad = parsed.isna()
-    if bad.any():
-        print(f"[!] {col}: не розпарсилось {bad.sum()} рядків -> збережено в '{pref}_raw'")
-        df[f"{pref}_raw"] = df[col].where(bad, "")
-        parsed = parsed.map(lambda x: x if isinstance(x, list) else [])
+    bad = [p is None for p in parsed]
+    if any(bad):
+        print(f"[!] {col}: не розпарсилось {sum(bad)} рядків -> сирий текст у '{pref}_raw'")
+        df[f"{pref}_raw"] = [v if b else "" for v, b in zip(df[col].tolist(), bad)]
+        parsed = [p if p is not None else [] for p in parsed]
 
-    # ключі в порядку першої появи
     keys = []
     for lst in parsed:
         for d in lst:
@@ -86,27 +82,42 @@ for col in json_cols:
                 if k not in keys:
                     keys.append(k)
 
-    max_n = parsed.map(len).max() if len(parsed) else 0
-    print(f"{col}: ключі {keys}, макс. записів у рядку = {max_n}")
+    counts = [len(lst) for lst in parsed]
+    max_n = max(counts) if counts else 0
+    cap = min(max_n, max_items)
+    over = sum(c > cap for c in counts)
 
-    new = {f"{pref}_кількість": parsed.map(len)}
-    for n in range(max_n):
+    # --- перші cap осіб в окремі колонки ---
+    new = {f"{pref}_кількість": counts}
+    for n in range(cap):
         for k in keys:
-            new[f"{pref}_{n + 1}_{k}"] = parsed.map(
-                lambda lst, n=n, k=k: lst[n].get(k, "") if n < len(lst) else ""
-            )
+            new[f"{pref}_{n + 1}_{k}"] = [
+                lst[n].get(k, "") if n < len(lst) else "" for lst in parsed
+            ]
 
     pos = df.columns.get_loc(col)
-    left, right = df.iloc[:, :pos], df.iloc[:, pos + 1:]
-    df = pd.concat([left, pd.DataFrame(new, index=df.index), right], axis=1)
+    df = pd.concat(
+        [df.iloc[:, :pos], pd.DataFrame(new, index=df.index), df.iloc[:, pos + 1:]],
+        axis=1,
+    )
+    print(
+        f"{col}: ключі {keys}, макс. у рядку = {max_n}, в основну таблицю {cap} "
+        f"({1 + cap * len(keys)} колонок), обрізано у {over} компаній"
+    )
 
 # ---------- 3. Зберігаємо ----------
 print(f"\nПідсумок: {df.shape[0]} рядків x {df.shape[1]} колонок")
-df.to_csv(OUT_CSV, index=False, encoding="utf-8-sig")
-print("CSV  ->", OUT_CSV)
+df.to_csv(OUT_DIR / "ubki_all_flat.csv", index=False, encoding="utf-8-sig")
+print("CSV  ->", OUT_DIR / "ubki_all_flat.csv")
 
-if df.shape[1] <= 16384:
-    df.to_excel(OUT_XLSX, index=False)  # ЄДРПОУ лишається текстом (нулі не губляться)
-    print("XLSX ->", OUT_XLSX)
+if len(df) < 1_048_576 and df.shape[1] <= 16_384:
+    try:
+        import xlsxwriter  # noqa: F401  (швидше за openpyxl)
+        engine = "xlsxwriter"
+    except ImportError:
+        engine = "openpyxl"
+    print(f"Пишу XLSX ({engine}), це може зайняти кілька хвилин...")
+    df.to_excel(OUT_DIR / "ubki_all_flat.xlsx", index=False, engine=engine)
+    print("XLSX ->", OUT_DIR / "ubki_all_flat.xlsx")
 else:
-    print("[!] Забагато колонок для Excel, збережено лише CSV")
+    print("[!] Таблиця більша за ліміти Excel, збережено лише CSV")
